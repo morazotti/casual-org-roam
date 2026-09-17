@@ -14,6 +14,7 @@
 (require 'org-roam)
 (require 'org-ql)
 (require 'org-ql-search)
+(require 'org-roam-ql)
 (require 'consult-org-roam nil t)
 
 ;; ---------------------------------------------------------------------
@@ -33,66 +34,6 @@
                         (or (bound-and-true-p org-todo-keywords-1)
                             '("TODO" "WAIT" "HOLD" "DONE" "CANCELLED")))))
     (completing-read "Estado TODO: " states nil t)))
-
-(defun casual-roam-ql--prompt-clause ()
-  "Solicita um predicado Org-QL usando `completing-read'.
-Retorna a forma Elisp correspondente ou nil para finalizar."
-  (let* ((options '(("[Concluir e Buscar]" . done)
-                    ("Tag do Roam"         . tag)
-                    ("Estado TODO"         . todo)
-                    ("Texto no Cabeçalho"  . heading)
-                    ("Texto Livre (Regex)" . regexp)
-                    ("Prioridade"          . priority)
-                    ("Modificado recente"  . recent)
-                    ("Com Deadline"        . deadline)
-                    ("Com Agendamento"     . scheduled)
-                    ("Expressão Lisp crua" . raw)))
-         (choice-label (completing-read "Adicionar critério (vazio para encerrar): "
-                                        (mapcar #'car options)
-                                        nil t))
-         (action (cdr (assoc choice-label options))))
-    (pcase action
-      ('nil nil)
-      ('done 'done)
-      ('tag
-       (let ((tag (casual-roam-ql--read-tag)))
-         (unless (string-empty-p tag)
-           `(tags ,tag))))
-      ('todo
-       (let ((state (casual-roam-ql--read-todo-state)))
-         (if (string-equal state "QUALQUER TODO")
-             '(todo)
-           `(todo ,state))))
-      ('heading
-       (let ((h (read-string "Texto no cabeçalho: ")))
-         (unless (string-empty-p h)
-           `(heading ,h))))
-      ('regexp
-       (let ((r (read-string "Expressão regular/texto: ")))
-         (unless (string-empty-p r)
-           `(regexp ,r))))
-      ('priority
-       (let ((p (completing-read "Prioridade: " '("A" "B" "C") nil t)))
-         `(priority ,p)))
-      ('recent
-       (let ((days (read-number "Modificado nos últimos N dias: " 7)))
-         `(ts :from ,(- (abs days))))))
-      ('deadline
-       (let ((when (completing-read "Deadline: " '("past" "today" "future") nil t)))
-         (pcase when
-           ("past"   '(deadline :past t))
-           ("today"  '(deadline :to today))
-           ("future" '(deadline :from today)))))
-      ('scheduled
-       (let ((when (completing-read "Scheduled: " '("past" "today" "future") nil t)))
-         (pcase when
-           ("past"   '(scheduled :past t))
-           ("today"  '(scheduled :to today))
-           ("future" '(scheduled :from today)))))
-      ('raw
-       (condition-case nil
-           (read (read-string "Forma Elisp crua: "))
-         (error nil)))))
 
 ;;;###autoload
 (defun casual-roam-ql-builder ()
@@ -184,13 +125,17 @@ Permite compor múltiplos critérios (AND/OR), escolher ordenação e executar."
              (scope-choice (completing-read "Escopo da busca: "
                                             '("Org-Roam" "Agenda Files")
                                             nil t nil nil "Org-Roam"))
-             (target-files (if (string-equal scope-choice "Agenda Files")
-                               (org-agenda-files)
-                             (org-roam-list-files)))
              (title (format "%s: %S" scope-choice query)))
-        (if sort-choice
-            (org-ql-search target-files query :title title :sort (eval sort-choice t))
-          (org-ql-search target-files query :title title))))))
+        (if (string-equal scope-choice "Org-Roam")
+            ;; Usa org-roam-ql para busca eficiente no banco de dados do Roam
+            (if sort-choice
+                (org-roam-ql-search query :title title :sort (eval sort-choice t))
+              (org-roam-ql-search query :title title))
+          ;; Fallback para org-ql-search clássico para Agenda Files
+          (let ((target-files (org-agenda-files)))
+            (if sort-choice
+                (org-ql-search target-files query :title title :sort (eval sort-choice t))
+              (org-ql-search target-files query :title title))))))))
 
 ;; ---------------------------------------------------------------------
 ;; CONSULTAS PREDEFINIDAS ORG-QL
@@ -199,25 +144,22 @@ Permite compor múltiplos critérios (AND/OR), escolher ordenação e executar."
 (defun casual-roam-ql-todos ()
   "Listar tarefas (TODOs) no acervo do Org-Roam."
   (interactive)
-  (org-ql-search (org-roam-list-files)
-    '(todo)
-    :title "Org-Roam: Tarefas Perdidas (TODOs)"
-    :sort '(priority todo)))
+  (org-roam-ql-search '(todo)
+                      :title "Org-Roam: Tarefas Perdidas (TODOs)"
+                      :sort '(priority todo)))
 
 (defun casual-roam-ql-recent ()
   "Listar nós do Org-Roam com alterações nos últimos 7 dias."
   (interactive)
-  (org-ql-search (org-roam-list-files)
-    '(ts :from -7)
-    :title "Org-Roam: Modificados recentemente (7 dias)"
-    :sort '(date)))
+  (org-roam-ql-search '(ts :from -7)
+                      :title "Org-Roam: Modificados recentemente (7 dias)"
+                      :sort '(date)))
 
 (defun casual-roam-ql-projects ()
   "Listar nós com tag 'project' no Org-Roam."
   (interactive)
-  (org-ql-search (org-roam-list-files)
-    '(tags "project")
-    :title "Org-Roam: Projetos Ativos"))
+  (org-roam-ql-search '(tags "project")
+                      :title "Org-Roam: Projetos Ativos"))
 
 (defun casual-roam-ql-search (query)
   "Busca livre com Org-QL restrita aos arquivos do Org-Roam."
@@ -225,9 +167,8 @@ Permite compor múltiplos critérios (AND/OR), escolher ordenação e executar."
   (let ((query-form (condition-case nil
                         (read query)
                       (error query))))
-    (org-ql-search (org-roam-list-files)
-      query-form
-      :title (format "Org-Roam QL: %s" query))))
+    (org-roam-ql-search query-form
+                        :title (format "Org-Roam QL: %s" query))))
 
 (defun casual-roam-ql-find ()
   "Filtro dinâmico com Org-QL sobre as notas do Roam."
