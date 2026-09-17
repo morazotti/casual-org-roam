@@ -306,7 +306,7 @@ Permite compor múltiplos critérios (AND/OR), escolher ordenação e executar."
     ("d" "Atrasados e Urgentes (Pânico)"   casual-roam-ql-agenda-overdue)]]
   [["Navegação"
     ("b" "Voltar ao Roam Master"           casual-org-roam-master)
-    ("q" "Desistir e ir trabalhar"         transient-quit-one)]])
+    ("C-g" "Desistir e ir trabalhar"         transient-quit-one)]])
 
 ;; ---------------------------------------------------------------------
 ;; MENU PRINCIPAL: Casual Org-Roam Master
@@ -328,11 +328,11 @@ Permite compor múltiplos critérios (AND/OR), escolher ordenação e executar."
    ["Arsenal de Consultas"
     ("B" "Query Builder›"          casual-roam-ql-builder)
     ("s" "Grep no Acervo (Ripgrep)" consult-org-roam-search)
-    ("q" "Painel Org-QL›"          casual-org-ql)
+    ("q" "Painel Org-QL›"          casual-org-ql-tmenu)
     ("g" "Grafo Visual"            casual-roam-open-graph)
     ("u" "Sincronizar DB"          org-roam-db-sync)]]
   [["Controle"
-    ("q" "Desistir e ir simular fluidos" transient-quit-one)]])
+    ("C-g" "Desistir e ir simular fluidos" transient-quit-one)]])
 
 ;; Aliases no padrão Casual Suite
 (defalias 'casual-org-roam-tmenu #'casual-org-roam-master)

@@ -1,4 +1,4 @@
-**Casual Org-Roam**
+# **Casual Org-Roam**
 
 A suite of customizations for Org-Roam and Org-QL, designed to streamline your note-taking and knowledge management workflow. This package provides an interactive query builder, customizable keybindings, and a intuitive interface for exploring and navigating your Roam database.
 
