@@ -18,6 +18,57 @@
 (require 'consult-org-roam nil t)
 
 ;; ---------------------------------------------------------------------
+;; ABERTURA RÁPIDA DE BUFFERS PARA BUSCA
+;; ---------------------------------------------------------------------
+;; Quando org-ql / org-roam-ql abre arquivos para parse, os hooks
+;; normais do org-mode (prettify, indent, vc, encoding prompts, etc.)
+;; são extremamente caros.  Este mecanismo os desativa temporariamente.
+
+(defvar casual-roam--fast-open nil
+  "Quando non-nil, `find-file-noselect' abre buffers em modo rápido.")
+
+(defun casual-roam--fast-find-file-advice (orig-fn filename &rest args)
+  "Advice em torno de `find-file-noselect'.
+Quando `casual-roam--fast-open' é non-nil e o buffer ainda não
+existe, abre o arquivo inibindo hooks pesados do `org-mode'."
+  (if (or (not casual-roam--fast-open)
+          (get-file-buffer filename))       ; buffer já existe → sem custo
+      (apply orig-fn filename args)
+    (let (;; Inibir startup visual do org-mode
+          (org-inhibit-startup t)
+          (org-startup-folded nil)
+          (org-startup-indented nil)
+          (org-startup-with-inline-images nil)
+          (org-startup-with-latex-preview nil)
+          ;; Inibir controle de versão
+          (vc-handled-backends nil)
+          ;; Não atualizar o DB do roam ao salvar esses buffers temporários
+          (org-roam-db-update-on-save nil)
+          ;; Desativar hooks do org-mode (org-prettify, org-appear, etc.)
+          (org-mode-hook nil)
+          ;; Desativar font-lock (prettify-symbols, etc.)
+          (font-lock-mode nil)
+          (font-lock-defaults nil)
+          ;; Suprimir mensagens de encoding e avisos
+          (inhibit-message t)
+          ;; Coding system: aceitar UTF-8 silenciosamente
+          (coding-system-for-read 'utf-8-auto)
+          ;; Desativar hooks genéricos de find-file que possam ser pesados
+          (find-file-hook nil)
+          (after-change-major-mode-hook nil))
+      (apply orig-fn filename args))))
+
+(advice-add 'find-file-noselect :around #'casual-roam--fast-find-file-advice)
+
+(defmacro casual-roam-with-fast-open (&rest body)
+  "Executa BODY com abertura rápida de buffers org.
+Todos os arquivos abertos via `find-file-noselect' durante BODY
+terão hooks pesados desativados."
+  (declare (indent 0) (debug t))
+  `(let ((casual-roam--fast-open t))
+     ,@body))
+
+;; ---------------------------------------------------------------------
 ;; BUILDER ORG-QL COM COMPLETING-READ
 ;; ---------------------------------------------------------------------
 
@@ -126,16 +177,17 @@ Permite compor múltiplos critérios (AND/OR), escolher ordenação e executar."
                                             '("Org-Roam" "Agenda Files")
                                             nil t nil nil "Org-Roam"))
              (title (format "%s: %S" scope-choice query)))
-        (if (string-equal scope-choice "Org-Roam")
-            ;; Usa org-roam-ql para busca eficiente no banco de dados do Roam
-            (if sort-choice
-                (org-roam-ql-search query :title title :sort (eval sort-choice t))
-              (org-roam-ql-search query :title title))
-          ;; Fallback para org-ql-search clássico para Agenda Files
-          (let ((target-files (org-agenda-files)))
-            (if sort-choice
-                (org-ql-search target-files query :title title :sort (eval sort-choice t))
-              (org-ql-search target-files query :title title))))))))
+        (casual-roam-with-fast-open
+          (if (string-equal scope-choice "Org-Roam")
+              ;; Usa org-roam-ql para busca eficiente no banco de dados do Roam
+              (if sort-choice
+                  (org-roam-ql-search query :title title :sort (eval sort-choice t))
+                (org-roam-ql-search query :title title))
+            ;; Fallback para org-ql-search clássico para Agenda Files
+            (let ((target-files (org-agenda-files)))
+              (if sort-choice
+                  (org-ql-search target-files query :title title :sort (eval sort-choice t))
+                (org-ql-search target-files query :title title)))))))))
 
 ;; ---------------------------------------------------------------------
 ;; CONSULTAS PREDEFINIDAS ORG-QL
@@ -144,22 +196,25 @@ Permite compor múltiplos critérios (AND/OR), escolher ordenação e executar."
 (defun casual-roam-ql-todos ()
   "Listar tarefas (TODOs) no acervo do Org-Roam."
   (interactive)
-  (org-roam-ql-search '(todo)
-                      :title "Org-Roam: Tarefas Perdidas (TODOs)"
-                      :sort '(priority todo)))
+  (casual-roam-with-fast-open
+    (org-roam-ql-search '(todo)
+                        :title "Org-Roam: Tarefas Perdidas (TODOs)"
+                        :sort '(priority todo))))
 
 (defun casual-roam-ql-recent ()
   "Listar nós do Org-Roam com alterações nos últimos 7 dias."
   (interactive)
-  (org-roam-ql-search '(ts :from -7)
-                      :title "Org-Roam: Modificados recentemente (7 dias)"
-                      :sort '(date)))
+  (casual-roam-with-fast-open
+    (org-roam-ql-search '(ts :from -7)
+                        :title "Org-Roam: Modificados recentemente (7 dias)"
+                        :sort '(date))))
 
 (defun casual-roam-ql-projects ()
   "Listar nós com tag 'project' no Org-Roam."
   (interactive)
-  (org-roam-ql-search '(tags "project")
-                      :title "Org-Roam: Projetos Ativos"))
+  (casual-roam-with-fast-open
+    (org-roam-ql-search '(tags "project")
+                        :title "Org-Roam: Projetos Ativos")))
 
 (defun casual-roam-ql-search (query)
   "Busca livre com Org-QL restrita aos arquivos do Org-Roam."
@@ -167,38 +222,43 @@ Permite compor múltiplos critérios (AND/OR), escolher ordenação e executar."
   (let ((query-form (condition-case nil
                         (read query)
                       (error query))))
-    (org-roam-ql-search query-form
-                        :title (format "Org-Roam QL: %s" query))))
+    (casual-roam-with-fast-open
+      (org-roam-ql-search query-form
+                          :title (format "Org-Roam QL: %s" query)))))
 
 (defun casual-roam-ql-find ()
   "Filtro dinâmico com Org-QL sobre as notas do Roam."
   (interactive)
-  (org-ql-find (org-roam-list-files)
-    :prompt "Filtrar notas (Org-QL): "))
+  (casual-roam-with-fast-open
+    (org-ql-find (org-roam-list-files)
+      :prompt "Filtrar notas (Org-QL): ")))
 
 (defun casual-roam-ql-agenda-today ()
   "Foco de hoje na Agenda com Org-QL."
   (interactive)
-  (org-ql-search (org-agenda-files)
-    '(ts :to today)
-    :title "Agenda: Foco de Hoje"
-    :sort '(priority date)))
+  (casual-roam-with-fast-open
+    (org-ql-search (org-agenda-files)
+      '(ts :to today)
+      :title "Agenda: Foco de Hoje"
+      :sort '(priority date))))
 
 (defun casual-roam-ql-agenda-todos ()
   "Todos os TODOs da Agenda com Org-QL."
   (interactive)
-  (org-ql-search (org-agenda-files)
-    '(todo)
-    :title "Agenda: Todos os TODOs"
-    :sort '(todo priority)))
+  (casual-roam-with-fast-open
+    (org-ql-search (org-agenda-files)
+      '(todo)
+      :title "Agenda: Todos os TODOs"
+      :sort '(todo priority))))
 
 (defun casual-roam-ql-agenda-overdue ()
   "Tarefas atrasadas e urgentes da Agenda."
   (interactive)
-  (org-ql-search (org-agenda-files)
-    '(and (todo) (ts :past t))
-    :title "Agenda: Atrasados e Urgentes"
-    :sort '(priority date)))
+  (casual-roam-with-fast-open
+    (org-ql-search (org-agenda-files)
+      '(and (todo) (ts :past t))
+      :title "Agenda: Atrasados e Urgentes"
+      :sort '(priority date))))
 
 (defun casual-roam-open-graph ()
   "Abrir grafo visual (Org-Roam-UI ou Org-Roam Graph)."
