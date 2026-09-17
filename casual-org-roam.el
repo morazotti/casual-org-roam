@@ -1,4 +1,14 @@
-;;; teste.el --- Casual Menu para Org-Roam & Org-QL -*- lexical-binding: t; -*-
+;;; casual-org-roam.el --- Casual Menu para Org-Roam & Org-QL -*- lexical-binding: t; -*-
+
+;; Author: Nicolas <nicolas@laptop>
+;; Keywords: org-roam, org-ql, transient, casual
+;; Package-Requires: ((emacs "28.1") (transient "0.4.0") (org-roam "2.2.0") (org-ql "0.8"))
+
+;;; Commentary:
+;; Menu Casual (Transient) combinando Org-Roam com consultas avançadas Org-QL,
+;; incluindo um construtor interativo de predicados via completing-read.
+
+;;; Code:
 
 (require 'transient)
 (require 'org-roam)
@@ -6,9 +16,185 @@
 (require 'org-ql-search)
 (require 'consult-org-roam nil t)
 
-;; ---------------------------------------------------------
-;; COMANDOS AUXILIARES: Consultas Org-QL
-;; ---------------------------------------------------------
+;; ---------------------------------------------------------------------
+;; BUILDER ORG-QL COM COMPLETING-READ
+;; ---------------------------------------------------------------------
+
+(defun casual-roam-ql--read-tag ()
+  "Lê tag existente do Org-Roam via `completing-read'."
+  (let ((tags (if (fboundp 'org-roam-tag-completions)
+                  (org-roam-tag-completions)
+                nil)))
+    (completing-read "Tag: " tags nil nil)))
+
+(defun casual-roam-ql--read-todo-state ()
+  "Lê estado TODO relevante via `completing-read'."
+  (let ((states (append '("QUALQUER TODO")
+                        (or (bound-and-true-p org-todo-keywords-1)
+                            '("TODO" "WAIT" "HOLD" "DONE" "CANCELLED")))))
+    (completing-read "Estado TODO: " states nil t)))
+
+(defun casual-roam-ql--prompt-clause ()
+  "Solicita um predicado Org-QL usando `completing-read'.
+Retorna a forma Elisp correspondente ou nil para finalizar."
+  (let* ((options '(("[Concluir e Buscar]" . done)
+                    ("Tag do Roam"         . tag)
+                    ("Estado TODO"         . todo)
+                    ("Texto no Cabeçalho"  . heading)
+                    ("Texto Livre (Regex)" . regexp)
+                    ("Prioridade"          . priority)
+                    ("Modificado recente"  . recent)
+                    ("Com Deadline"        . deadline)
+                    ("Com Agendamento"     . scheduled)
+                    ("Expressão Lisp crua" . raw)))
+         (choice-label (completing-read "Adicionar critério (vazio para encerrar): "
+                                        (mapcar #'car options)
+                                        nil t))
+         (action (cdr (assoc choice-label options))))
+    (pcase action
+      ('nil nil)
+      ('done 'done)
+      ('tag
+       (let ((tag (casual-roam-ql--read-tag)))
+         (unless (string-empty-p tag)
+           `(tags ,tag))))
+      ('todo
+       (let ((state (casual-roam-ql--read-todo-state)))
+         (if (string-equal state "QUALQUER TODO")
+             '(todo)
+           `(todo ,state))))
+      ('heading
+       (let ((h (read-string "Texto no cabeçalho: ")))
+         (unless (string-empty-p h)
+           `(heading ,h))))
+      ('regexp
+       (let ((r (read-string "Expressão regular/texto: ")))
+         (unless (string-empty-p r)
+           `(regexp ,r))))
+      ('priority
+       (let ((p (completing-read "Prioridade: " '("A" "B" "C") nil t)))
+         `(priority ,p)))
+      ('recent
+       (let ((days (read-number "Modificado nos últimos N dias: " 7)))
+         `(ts :from ,(- (abs days))))))
+      ('deadline
+       (let ((when (completing-read "Deadline: " '("past" "today" "future") nil t)))
+         (pcase when
+           ("past"   '(deadline :past t))
+           ("today"  '(deadline :to today))
+           ("future" '(deadline :from today)))))
+      ('scheduled
+       (let ((when (completing-read "Scheduled: " '("past" "today" "future") nil t)))
+         (pcase when
+           ("past"   '(scheduled :past t))
+           ("today"  '(scheduled :to today))
+           ("future" '(scheduled :from today)))))
+      ('raw
+       (condition-case nil
+           (read (read-string "Forma Elisp crua: "))
+         (error nil)))))
+
+;;;###autoload
+(defun casual-roam-ql-builder ()
+  "Construtor interativo de consultas Org-QL no Org-Roam com `completing-read'.
+Permite compor múltiplos critérios (AND/OR), escolher ordenação e executar."
+  (interactive)
+  (let ((clauses nil)
+        (looping t))
+    (while looping
+      (let* ((prompt-info (if clauses
+                              (format "Critérios [%s] -> próximo: "
+                                      (mapconcat (lambda (c) (format "%S" c)) clauses ", "))
+                            "Primeiro critério: "))
+             (options '(("[Finalizar e Buscar]"  . done)
+                        ("Tag do Roam"           . tag)
+                        ("Estado TODO"           . todo)
+                        ("Texto no Cabeçalho"    . heading)
+                        ("Texto Geral (Regex)"   . regexp)
+                        ("Prioridade"            . priority)
+                        ("Modificado recente"    . recent)
+                        ("Com Prazo (Deadline)"  . deadline)
+                        ("Com Agendamento"       . scheduled)
+                        ("Expressão Lisp crua"   . raw)))
+             (choice-label (completing-read prompt-info (mapcar #'car options) nil t))
+             (action (cdr (assoc choice-label options))))
+        (pcase action
+          ((or 'nil 'done)
+           (setq looping nil))
+          ('tag
+           (let ((tag (casual-roam-ql--read-tag)))
+             (when (> (length tag) 0)
+               (push `(tags ,tag) clauses))))
+          ('todo
+           (let ((st (casual-roam-ql--read-todo-state)))
+             (push (if (string-equal st "QUALQUER TODO")
+                       '(todo)
+                     `(todo ,st))
+                   clauses)))
+          ('heading
+           (let ((h (read-string "Texto no cabeçalho: ")))
+             (when (> (length h) 0)
+               (push `(heading ,h) clauses))))
+          ('regexp
+           (let ((rg (read-string "Expressão regular: ")))
+             (when (> (length rg) 0)
+               (push `(regexp ,rg) clauses))))
+          ('priority
+           (let ((p (completing-read "Prioridade: " '("A" "B" "C") nil t)))
+             (push `(priority ,p) clauses)))
+          ('recent
+           (let ((d (read-number "Modificado nos últimos N dias: " 7)))
+             (push `(ts :from ,(- (abs d))) clauses)))
+          ('deadline
+           (let ((dl (completing-read "Deadline: " '("Atrasados (past)" "Hoje (today)" "Futuros (future)") nil t)))
+             (pcase dl
+               ("Atrasados (past)" (push '(deadline :past t) clauses))
+               ("Hoje (today)"     (push '(deadline :to today) clauses))
+               ("Futuros (future)" (push '(deadline :from today) clauses)))))
+          ('scheduled
+           (let ((sc (completing-read "Scheduled: " '("Atrasados (past)" "Hoje (today)" "Futuros (future)") nil t)))
+             (pcase sc
+               ("Atrasados (past)" (push '(scheduled :past t) clauses))
+               ("Hoje (today)"     (push '(scheduled :to today) clauses))
+               ("Futuros (future)" (push '(scheduled :from today) clauses)))))
+          ('raw
+           (let ((r (read-string "S-expression crua: ")))
+             (when (> (length r) 0)
+               (condition-case nil
+                   (push (read r) clauses)
+                 (error (message "Expressão inválida descartada.")))))))))
+
+    (if (null clauses)
+        (message "Nenhum critério selecionado.")
+      (let* ((clauses-clean (nreverse clauses))
+             (logic-op (if (> (length clauses-clean) 1)
+                           (intern (completing-read "Operador lógico: " '("and" "or") nil t nil nil "and"))
+                         'and))
+             (query (if (= (length clauses-clean) 1)
+                        (car clauses-clean)
+                      (cons logic-op clauses-clean)))
+             (sort-options '(("priority" . '(priority))
+                             ("date"     . '(date))
+                             ("todo"     . '(todo priority))
+                             ("nenhum"   . nil)))
+             (sort-choice (cdr (assoc (completing-read "Ordenar por: "
+                                                       (mapcar #'car sort-options)
+                                                       nil t nil nil "nenhum")
+                                      sort-options)))
+             (scope-choice (completing-read "Escopo da busca: "
+                                            '("Org-Roam" "Agenda Files")
+                                            nil t nil nil "Org-Roam"))
+             (target-files (if (string-equal scope-choice "Agenda Files")
+                               (org-agenda-files)
+                             (org-roam-list-files)))
+             (title (format "%s: %S" scope-choice query)))
+        (if sort-choice
+            (org-ql-search target-files query :title title :sort (eval sort-choice t))
+          (org-ql-search target-files query :title title))))))
+
+;; ---------------------------------------------------------------------
+;; CONSULTAS PREDEFINIDAS ORG-QL
+;; ---------------------------------------------------------------------
 
 (defun casual-roam-ql-todos ()
   "Listar tarefas (TODOs) no acervo do Org-Roam."
@@ -27,7 +213,7 @@
     :sort '(date)))
 
 (defun casual-roam-ql-projects ()
-  "Listar projetos ativos marcados no Org-Roam."
+  "Listar nós com tag 'project' no Org-Roam."
   (interactive)
   (org-ql-search (org-roam-list-files)
     '(tags "project")
@@ -81,51 +267,53 @@
    ((fboundp 'org-roam-graph)   (org-roam-graph))
    (t (user-error "Nenhum visualizador de grafo disponível"))))
 
-;; ---------------------------------------------------------
+;; ---------------------------------------------------------------------
 ;; SUBMENU: Consultas Org-Roam
-;; ---------------------------------------------------------
+;; ---------------------------------------------------------------------
 
 (transient-define-prefix casual-org-ql-roam ()
   "Submenu para caçar coisas no seu segundo cérebro."
   [["Consultas no Org-Roam"
-    ("t" "Tarefas perdidas (TODOs)"        casual-roam-ql-todos)
-    ("r" "Modificados nos últimos 7 dias" casual-roam-ql-recent)
-    ("p" "Projetos Ativos"                 casual-roam-ql-projects)
-    ("s" "Busca Org-QL livre…"             casual-roam-ql-search)]
+    ("B" "Construtor de Buscas…"         casual-roam-ql-builder)
+    ("t" "Tarefas perdidas (TODOs)"      casual-roam-ql-todos)
+    ("r" "Modificados recentemente"      casual-roam-ql-recent)
+    ("p" "Projetos Ativos"               casual-roam-ql-projects)
+    ("s" "Busca Org-QL livre…"           casual-roam-ql-search)]
    ["Navegação"
-    ("b" "Voltar ao menu QL"               casual-org-ql)
-    ("q" "Sair"                            transient-quit-one)]])
+    ("b" "Voltar ao menu QL"             casual-org-ql)
+    ("q" "Sair"                          transient-quit-one)]])
 
-;; ---------------------------------------------------------
+;; ---------------------------------------------------------------------
 ;; MENU INTERMEDIÁRIO: Casual Org-QL
-;; ---------------------------------------------------------
+;; ---------------------------------------------------------------------
 
 (transient-define-prefix casual-org-ql ()
   "Painel de consultas e filtros Org-QL."
-  [["Agenda Automágica"
-    ("a" "Foco de Hoje"                  casual-roam-ql-agenda-today)
-    ("t" "Todos os TODOs (Caos)"         casual-roam-ql-agenda-todos)
-    ("d" "Atrasados e Urgentes (Pânico)" casual-roam-ql-agenda-overdue)
-    ("v" "Abrir Views Salvas"            org-ql-view)]
+  [["Construtor & Filtros"
+    ("B" "Query Builder (Completing-Read)" casual-roam-ql-builder)
+    ("c" "Filtro dinâmico (find)…"         casual-roam-ql-find)
+    ("l" "Busca livre (ql-search)…"        org-ql-search)
+    ("v" "Abrir Views Salvas"              org-ql-view)]
    ["Segundo Cérebro (Roam)"
-    ("r" "TODOs no Roam"                 casual-roam-ql-todos)
-    ("m" "Modificados (7 dias)"          casual-roam-ql-recent)
-    ("p" "Projetos Ativos"               casual-roam-ql-projects)
-    ("s" "Busca QL no Roam…"             casual-roam-ql-search)]
-   ["Operações Interativas"
-    ("c" "Filtro dinâmico (find)…"       casual-roam-ql-find)
-    ("l" "Busca Org-QL livre…"           org-ql-search)
-    ("g" "Grep textual no Roam…"         consult-org-roam-search)]]
+    ("r" "TODOs no Roam"                   casual-roam-ql-todos)
+    ("m" "Modificados (7 dias)"            casual-roam-ql-recent)
+    ("p" "Projetos Ativos"                 casual-roam-ql-projects)
+    ("s" "Busca QL no Roam…"               casual-roam-ql-search)
+    ("g" "Grep textual no Roam…"           consult-org-roam-search)]
+   ["Agenda Automágica"
+    ("a" "Foco de Hoje"                    casual-roam-ql-agenda-today)
+    ("t" "Todos os TODOs (Caos)"           casual-roam-ql-agenda-todos)
+    ("d" "Atrasados e Urgentes (Pânico)"   casual-roam-ql-agenda-overdue)]]
   [["Navegação"
-    ("b" "Voltar ao Roam Master"         casual-org-roam-master)
-    ("q" "Desistir e ir trabalhar"       transient-quit-one)]])
+    ("b" "Voltar ao Roam Master"           casual-org-roam-master)
+    ("q" "Desistir e ir trabalhar"         transient-quit-one)]])
 
-;; ---------------------------------------------------------
+;; ---------------------------------------------------------------------
 ;; MENU PRINCIPAL: Casual Org-Roam Master
-;; ---------------------------------------------------------
+;; ---------------------------------------------------------------------
 
 (transient-define-prefix casual-org-roam-master ()
-  "O Centro de Comando Absoluto do Doutor."
+  "O Centro de Comando Casual para Org-Roam."
   [["Criação & Navegação"
     ("f" "Buscar Nó (Find)"        org-roam-node-find)
     ("i" "Inserir Link (Insert)"   org-roam-node-insert)
@@ -138,20 +326,21 @@
     ("a" "Adicionar Alias"         org-roam-alias-add)
     ("X" "Remover Alias"           org-roam-alias-remove)]
    ["Arsenal de Consultas"
+    ("B" "Query Builder›"          casual-roam-ql-builder)
     ("s" "Grep no Acervo (Ripgrep)" consult-org-roam-search)
-    ("q" "Painel Org-QL›"           casual-org-ql)
-    ("g" "Grafo Visual"             casual-roam-open-graph)
-    ("u" "Sincronizar DB"           org-roam-db-sync)]]
+    ("q" "Painel Org-QL›"          casual-org-ql)
+    ("g" "Grafo Visual"            casual-roam-open-graph)
+    ("u" "Sincronizar DB"          org-roam-db-sync)]]
   [["Controle"
     ("q" "Desistir e ir simular fluidos" transient-quit-one)]])
 
-;; Aliases no estilo Casual Suite
+;; Aliases no padrão Casual Suite
 (defalias 'casual-org-roam-tmenu #'casual-org-roam-master)
 (defalias 'casual-org-ql-tmenu   #'casual-org-ql)
 
-;; Mapeamentos globais
+;; Atalhos globais
 (global-set-key (kbd "C-c r") #'casual-org-roam-master)
 (global-set-key (kbd "C-c q") #'casual-org-ql)
 
 (provide 'casual-org-roam)
-;;; teste.el ends here
+;;; casual-org-roam.el ends here
