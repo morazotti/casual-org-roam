@@ -180,9 +180,8 @@ Permite compor múltiplos critérios (AND/OR), escolher ordenação e executar."
         (casual-roam-with-fast-open
           (if (string-equal scope-choice "Org-Roam")
               ;; Usa org-roam-ql para busca eficiente no banco de dados do Roam
-              (if sort-choice
-                  (org-roam-ql-search query :title title :sort (eval sort-choice t))
-                (org-roam-ql-search query :title title))
+              ;; Assinatura: (source-or-query &optional title filter sort-fn)
+              (org-roam-ql-search query title nil (when sort-choice (eval sort-choice t)))
             ;; Fallback para org-ql-search clássico para Agenda Files
             (let ((target-files (org-agenda-files)))
               (if sort-choice
@@ -198,23 +197,25 @@ Permite compor múltiplos critérios (AND/OR), escolher ordenação e executar."
   (interactive)
   (casual-roam-with-fast-open
     (org-roam-ql-search '(todo)
-                        :title "Org-Roam: Tarefas Perdidas (TODOs)"
-                        :sort '(priority todo))))
+                        "Org-Roam: Tarefas Perdidas (TODOs)"
+                        nil
+                        '(priority todo))))
 
 (defun casual-roam-ql-recent ()
   "Listar nós do Org-Roam com alterações nos últimos 7 dias."
   (interactive)
   (casual-roam-with-fast-open
     (org-roam-ql-search '(ts :from -7)
-                        :title "Org-Roam: Modificados recentemente (7 dias)"
-                        :sort '(date))))
+                        "Org-Roam: Modificados recentemente (7 dias)"
+                        nil
+                        '(date))))
 
 (defun casual-roam-ql-projects ()
   "Listar nós com tag 'project' no Org-Roam."
   (interactive)
   (casual-roam-with-fast-open
     (org-roam-ql-search '(tags "project")
-                        :title "Org-Roam: Projetos Ativos")))
+                        "Org-Roam: Projetos Ativos")))
 
 (defun casual-roam-ql-search (query)
   "Busca livre com Org-QL restrita aos arquivos do Org-Roam."
@@ -224,7 +225,7 @@ Permite compor múltiplos critérios (AND/OR), escolher ordenação e executar."
                       (error query))))
     (casual-roam-with-fast-open
       (org-roam-ql-search query-form
-                          :title (format "Org-Roam QL: %s" query)))))
+                          (format "Org-Roam QL: %s" query)))))
 
 (defun casual-roam-ql-find ()
   "Filtro dinâmico com Org-QL sobre as notas do Roam."
