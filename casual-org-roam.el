@@ -1,6 +1,6 @@
 ;;; casual-org-roam.el --- Casual Menu para Org-Roam & Org-QL -*- lexical-binding: t; -*-
 
-;; Author: Nicolas <nicolas@laptop>
+;; Author: Nicolas <nicolas.morazotti@gmail.com>
 ;; Keywords: org-roam, org-ql, transient, casual
 ;; Package-Requires: ((emacs "28.1") (transient "0.4.0") (org-roam "2.2.0") (org-ql "0.8"))
 
@@ -337,10 +337,6 @@ Permite compor múltiplos critérios (AND/OR), escolher ordenação e executar."
 ;; Aliases no padrão Casual Suite
 (defalias 'casual-org-roam-tmenu #'casual-org-roam-master)
 (defalias 'casual-org-ql-tmenu   #'casual-org-ql)
-
-;; Atalhos globais
-(global-set-key (kbd "C-c r") #'casual-org-roam-master)
-(global-set-key (kbd "C-c q") #'casual-org-ql)
 
 (provide 'casual-org-roam)
 ;;; casual-org-roam.el ends here
